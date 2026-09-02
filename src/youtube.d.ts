@@ -14,6 +14,7 @@ declare global {
       pauseVideo(): void
       stopVideo(): void
       setVolume(volume: number): void
+      seekTo(seconds: number, allowSeekAhead?: boolean): void
       mute(): void
       unMute(): void
     }
