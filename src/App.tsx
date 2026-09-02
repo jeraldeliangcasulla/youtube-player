@@ -121,6 +121,18 @@ function loadInitialPlaylist(): Track[] {
   return localPlaylist;
 }
 
+function formatTime(seconds: number) {
+  const totalSeconds = Number.isFinite(seconds)
+    ? Math.max(0, Math.floor(seconds))
+    : 0;
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainder = totalSeconds % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`
+    : `${minutes}:${String(remainder).padStart(2, "0")}`;
+}
+
 async function copyToClipboard(value: string) {
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(value);
@@ -291,6 +303,7 @@ function YouTubeEngine({
   muted,
   replayToken,
   onReady,
+  onTimeUpdate,
   onStateChange,
   onError,
 }: {
@@ -300,13 +313,22 @@ function YouTubeEngine({
   muted: boolean;
   replayToken: number;
   onReady: (player: YT.Player) => void;
+  onTimeUpdate: (currentTime: number, duration: number) => void;
   onStateChange: (state: number) => void;
   onError: () => void;
 }) {
   const mountRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<YT.Player | null>(null);
-  const handlersRef = useRef({ onReady, onStateChange, onError });
-  handlersRef.current = { onReady, onStateChange, onError };
+  const handlersRef = useRef({ onReady, onTimeUpdate, onStateChange, onError });
+  handlersRef.current = { onReady, onTimeUpdate, onStateChange, onError };
+
+  const updateTime = () => {
+    if (!playerRef.current) return;
+    handlersRef.current.onTimeUpdate(
+      playerRef.current.getCurrentTime(),
+      playerRef.current.getDuration(),
+    );
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -332,6 +354,10 @@ function YouTubeEngine({
               event.target.seekTo(0, true);
               event.target.playVideo();
             }
+            handlersRef.current.onTimeUpdate(
+              event.target.getCurrentTime(),
+              event.target.getDuration(),
+            );
             handlersRef.current.onReady(event.target);
           },
           onStateChange: (event) =>
@@ -365,6 +391,13 @@ function YouTubeEngine({
     playerRef.current.playVideo();
   }, [replayToken]);
 
+  useEffect(() => {
+    updateTime();
+    if (!isPlaying) return;
+    const interval = window.setInterval(updateTime, 250);
+    return () => window.clearInterval(interval);
+  }, [isPlaying]);
+
   return <div ref={mountRef} className="youtube-engine" aria-hidden="true" />;
 }
 
@@ -385,6 +418,9 @@ function App() {
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [darkMode, setDarkMode] = useState(initialSettings.darkMode);
   const [isCopied, setIsCopied] = useState(false);
+  const [playbackTimes, setPlaybackTimes] = useState<
+    Record<string, { current: number; duration: number }>
+  >({});
 
   useEffect(() => {
     const hasSharedPlaylist =
@@ -468,6 +504,27 @@ function App() {
     setPlayingIds((current) => new Set(current).add(trackId));
   };
 
+  const updatePlaybackTime = (
+    trackId: string,
+    current: number,
+    duration: number,
+  ) => {
+    const nextTime = {
+      current: Math.floor(current),
+      duration: Math.floor(duration),
+    };
+    setPlaybackTimes((previous) => {
+      const previousTime = previous[trackId];
+      if (
+        previousTime?.current === nextTime.current &&
+        previousTime?.duration === nextTime.duration
+      ) {
+        return previous;
+      }
+      return { ...previous, [trackId]: nextTime };
+    });
+  };
+
   const removeTrack = (trackId: string) => {
     setTracks((current) => current.filter((track) => track.id !== trackId));
     setPlayingIds((current) => {
@@ -545,7 +602,7 @@ function App() {
           <span>
             sonic<span className="brand-accent">room</span>
           </span>
-          <span className="app-version">v1.0.1</span>
+          <span className="app-version">v1.0.2</span>
         </a>
         <div className="topbar-actions">
           <button
@@ -650,6 +707,33 @@ function App() {
                     )}
                   </div>
                   <p>{track.artist}</p>
+                  <div
+                    className="track-time"
+                    aria-label={`${track.title} playback time`}
+                  >
+                    <div
+                      className="track-progress"
+                      role="progressbar"
+                      aria-valuemin={0}
+                      aria-valuemax={playbackTimes[track.id]?.duration || 0}
+                      aria-valuenow={playbackTimes[track.id]?.current || 0}
+                    >
+                      <span
+                        style={{
+                          width: `${Math.min(
+                            100,
+                            ((playbackTimes[track.id]?.current || 0) /
+                              (playbackTimes[track.id]?.duration || 1)) *
+                              100,
+                          )}%`,
+                        }}
+                      />
+                    </div>
+                    <span>
+                      {formatTime(playbackTimes[track.id]?.current || 0)} /{" "}
+                      {formatTime(playbackTimes[track.id]?.duration || 0)}
+                    </span>
+                  </div>
                 </div>
                 <div className="track-controls">
                   <button
@@ -719,6 +803,9 @@ function App() {
                   muted={mutedIds.has(track.id)}
                   replayToken={replayTokens[track.id] ?? 0}
                   onReady={() => updateTrack(track.id, { state: "ready" })}
+                  onTimeUpdate={(current, duration) =>
+                    updatePlaybackTime(track.id, current, duration)
+                  }
                   onStateChange={(state) => {
                     if (state === window.YT?.PlayerState.PLAYING)
                       updateTrack(track.id, { state: "playing" });
