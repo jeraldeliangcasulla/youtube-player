@@ -11,6 +11,7 @@ type Track = {
   title: string
   artist: string
   accent: string
+  volume: number
   state: TrackState
 }
 
@@ -32,6 +33,7 @@ function parsePlaylist(value: string | null): Track[] | null {
         title: track.title!,
         artist: track.artist || 'YouTube channel · ready to mix',
         accent: track.accent || ACCENTS[index % ACCENTS.length],
+        volume: typeof track.volume === 'number' ? Math.max(0, Math.min(100, track.volume)) : 100,
         state: 'loading' as TrackState,
       }))
   } catch {
@@ -223,7 +225,7 @@ function App() {
 
   useEffect(() => {
     try {
-      const playlist = tracks.map(({ videoId, title, artist, accent }) => ({ videoId, title, artist, accent }))
+      const playlist = tracks.map(({ videoId, title, artist, accent, volume }) => ({ videoId, title, artist, accent, volume }))
       localStorage.setItem(PLAYLIST_STORAGE_KEY, JSON.stringify(playlist))
     } catch {
       // Storage can be unavailable in private browsing; playback still works.
@@ -277,6 +279,7 @@ function App() {
       title: name.trim() || `New sound ${tracks.length + 1}`,
       artist: 'YouTube channel · ready to mix',
       accent: ACCENTS[tracks.length % ACCENTS.length],
+      volume: 100,
       state: 'loading',
     }
     setTracks((current) => [...current, newTrack])
@@ -291,7 +294,7 @@ function App() {
   }
 
   const sharePlaylist = async () => {
-    const playlist = tracks.map(({ videoId, title, artist, accent }) => ({ videoId, title, artist, accent }))
+    const playlist = tracks.map(({ videoId, title, artist, accent, volume }) => ({ videoId, title, artist, accent, volume }))
     const shareUrl = new URL(window.location.href)
     shareUrl.hash = playlist.length ? `playlist=${encodeURIComponent(JSON.stringify(playlist))}` : ''
 
@@ -357,10 +360,14 @@ function App() {
                 </div>
                 <div className="track-controls">
                   <button className={`play-button ${playingIds.has(track.id) ? 'playing' : ''}`} onClick={() => toggleTrack(track.id)} aria-label={`${playingIds.has(track.id) ? 'Pause' : 'Play'} ${track.title}`}><Icon name={playingIds.has(track.id) ? 'pause' : 'play'} size={18} /></button>
+                  <label className="track-volume" aria-label={`${track.title} volume`}>
+                    <Icon name={track.volume === 0 ? 'mute' : 'volume'} size={16} />
+                    <input type="range" min="0" max="100" value={track.volume} onChange={(event) => updateTrack(track.id, { volume: Number(event.target.value) })} style={{ '--track-range': `${track.volume}%` } as CSSProperties} />
+                  </label>
                   <button className={`mute-button ${mutedIds.has(track.id) ? 'muted' : ''}`} onClick={() => toggleMute(track.id)} aria-label={`${mutedIds.has(track.id) ? 'Unmute' : 'Mute'} ${track.title}`}><Icon name={mutedIds.has(track.id) ? 'mute' : 'volume'} size={18} /></button>
                   <button className="delete-button" onClick={() => removeTrack(track.id)} aria-label={`Remove ${track.title}`}><Icon name="trash" size={17} /></button>
                 </div>
-                <YouTubeEngine track={track} isPlaying={playingIds.has(track.id)} volume={masterVolume} muted={mutedIds.has(track.id)} onReady={() => updateTrack(track.id, { state: 'ready' })} onStateChange={(state) => {
+                <YouTubeEngine track={track} isPlaying={playingIds.has(track.id)} volume={Math.round(masterVolume * track.volume / 100)} muted={mutedIds.has(track.id)} onReady={() => updateTrack(track.id, { state: 'ready' })} onStateChange={(state) => {
                   if (state === window.YT?.PlayerState.PLAYING) updateTrack(track.id, { state: 'playing' })
                   if (state === window.YT?.PlayerState.PAUSED) updateTrack(track.id, { state: 'paused' })
                   if (state === window.YT?.PlayerState.ENDED) {
