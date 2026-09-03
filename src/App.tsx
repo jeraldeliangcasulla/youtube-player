@@ -18,6 +18,7 @@ type Track = {
   artist: string;
   accent: string;
   volume: number;
+  enabled: boolean;
   state: TrackState;
 };
 
@@ -85,6 +86,7 @@ function parsePlaylist(value: string | null): Track[] | null {
           typeof track.volume === "number"
             ? Math.max(0, Math.min(100, track.volume))
             : 100,
+        enabled: track.enabled !== false,
         state: "loading" as TrackState,
       }));
   } catch {
@@ -131,6 +133,61 @@ function formatTime(seconds: number) {
   return hours > 0
     ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`
     : `${minutes}:${String(remainder).padStart(2, "0")}`;
+}
+
+function usePlaybackTime(
+  playerRef: { current: YT.Player | null },
+  isPlaying: boolean,
+  onTimeUpdate: (currentTime: number, duration: number) => void,
+) {
+  const onTimeUpdateRef = useRef(onTimeUpdate);
+  onTimeUpdateRef.current = onTimeUpdate;
+
+  const syncTime = () => {
+    if (!playerRef.current) return;
+    onTimeUpdateRef.current(
+      playerRef.current.getCurrentTime(),
+      playerRef.current.getDuration(),
+    );
+  };
+
+  useEffect(() => {
+    syncTime();
+    if (!isPlaying) return;
+    const interval = window.setInterval(syncTime, 250);
+    return () => window.clearInterval(interval);
+  }, [isPlaying]);
+
+  return syncTime;
+}
+
+function PlaybackTimeIndicator({
+  title,
+  currentTime,
+  duration,
+}: {
+  title: string;
+  currentTime: number;
+  duration: number;
+}) {
+  const progress = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
+
+  return (
+    <div className="track-time" aria-label={`${title} playback time`}>
+      <div
+        className="track-progress"
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={duration}
+        aria-valuenow={currentTime}
+      >
+        <span style={{ width: `${progress}%` }} />
+      </div>
+      <span>
+        {formatTime(currentTime)} / {formatTime(duration)}
+      </span>
+    </div>
+  );
 }
 
 async function copyToClipboard(value: string) {
@@ -283,6 +340,20 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
         <path d="M4 5v5h5" />
       </svg>
     );
+  if (name === "enabled")
+    return (
+      <svg {...common}>
+        <rect x="3" y="6" width="18" height="12" rx="6" />
+        <circle cx="16" cy="12" r="3" fill="currentColor" stroke="none" />
+      </svg>
+    );
+  if (name === "disabled")
+    return (
+      <svg {...common}>
+        <rect x="3" y="6" width="18" height="12" rx="6" />
+        <circle cx="8" cy="12" r="3" fill="currentColor" stroke="none" />
+      </svg>
+    );
   if (name === "check")
     return (
       <svg {...common}>
@@ -321,14 +392,7 @@ function YouTubeEngine({
   const playerRef = useRef<YT.Player | null>(null);
   const handlersRef = useRef({ onReady, onTimeUpdate, onStateChange, onError });
   handlersRef.current = { onReady, onTimeUpdate, onStateChange, onError };
-
-  const updateTime = () => {
-    if (!playerRef.current) return;
-    handlersRef.current.onTimeUpdate(
-      playerRef.current.getCurrentTime(),
-      playerRef.current.getDuration(),
-    );
-  };
+  const syncPlaybackTime = usePlaybackTime(playerRef, isPlaying, onTimeUpdate);
 
   useEffect(() => {
     let cancelled = false;
@@ -354,10 +418,7 @@ function YouTubeEngine({
               event.target.seekTo(0, true);
               event.target.playVideo();
             }
-            handlersRef.current.onTimeUpdate(
-              event.target.getCurrentTime(),
-              event.target.getDuration(),
-            );
+            syncPlaybackTime();
             handlersRef.current.onReady(event.target);
           },
           onStateChange: (event) =>
@@ -390,13 +451,6 @@ function YouTubeEngine({
     playerRef.current.seekTo(0, true);
     playerRef.current.playVideo();
   }, [replayToken]);
-
-  useEffect(() => {
-    updateTime();
-    if (!isPlaying) return;
-    const interval = window.setInterval(updateTime, 250);
-    return () => window.clearInterval(interval);
-  }, [isPlaying]);
 
   return <div ref={mountRef} className="youtube-engine" aria-hidden="true" />;
 }
@@ -439,12 +493,13 @@ function App() {
   useEffect(() => {
     try {
       const playlist = tracks.map(
-        ({ videoId, title, artist, accent, volume }) => ({
+        ({ videoId, title, artist, accent, volume, enabled }) => ({
           videoId,
           title,
           artist,
           accent,
           volume,
+          enabled,
         }),
       );
       localStorage.setItem(PLAYLIST_STORAGE_KEY, JSON.stringify(playlist));
@@ -468,7 +523,12 @@ function App() {
     }
   }, [darkMode, masterVolume, mutedIds]);
 
-  const allPlaying = tracks.length > 0 && playingIds.size === tracks.length;
+  const masterTracks = tracks.filter(
+    (track) => track.enabled && track.state !== "error",
+  );
+  const allPlaying =
+    masterTracks.length > 0 &&
+    masterTracks.every((track) => playingIds.has(track.id));
 
   const updateTrack = (trackId: string, update: Partial<Track>) => {
     setTracks((current) =>
@@ -479,6 +539,9 @@ function App() {
   };
 
   const toggleTrack = (trackId: string) => {
+    const track = tracks.find((item) => item.id === trackId);
+    if (!track?.enabled) return;
+
     setPlayingIds((current) => {
       const next = new Set(current);
       if (next.has(trackId)) next.delete(trackId);
@@ -497,11 +560,34 @@ function App() {
   };
 
   const replayTrack = (trackId: string) => {
+    const track = tracks.find((item) => item.id === trackId);
+    if (!track?.enabled || track.state === "error") return;
+
     setReplayTokens((current) => ({
       ...current,
       [trackId]: (current[trackId] ?? 0) + 1,
     }));
     setPlayingIds((current) => new Set(current).add(trackId));
+  };
+
+  const toggleTrackEnabled = (trackId: string) => {
+    const track = tracks.find((item) => item.id === trackId);
+    if (!track) return;
+
+    const enabled = !track.enabled;
+    setTracks((current) =>
+      current.map((item) =>
+        item.id === trackId ? { ...item, enabled } : item,
+      ),
+    );
+
+    if (!enabled) {
+      setPlayingIds((current) => {
+        const next = new Set(current);
+        next.delete(trackId);
+        return next;
+      });
+    }
   };
 
   const updatePlaybackTime = (
@@ -549,6 +635,7 @@ function App() {
       artist: "YouTube channel · ready to mix",
       accent: ACCENTS[tracks.length % ACCENTS.length],
       volume: 100,
+      enabled: true,
       state: "loading",
     };
     setTracks((current) => [...current, newTrack]);
@@ -559,19 +646,31 @@ function App() {
   };
 
   const playAll = () => {
-    setPlayingIds(
-      allPlaying ? new Set() : new Set(tracks.map((track) => track.id)),
-    );
+    setPlayingIds(allPlaying ? new Set() : new Set(masterTracks.map((track) => track.id)));
+  };
+
+  const replayAll = () => {
+    if (masterTracks.length === 0) return;
+
+    setReplayTokens((current) => {
+      const next = { ...current };
+      masterTracks.forEach((track) => {
+        next[track.id] = (next[track.id] ?? 0) + 1;
+      });
+      return next;
+    });
+    setPlayingIds(new Set(masterTracks.map((track) => track.id)));
   };
 
   const sharePlaylist = async () => {
     const playlist = tracks.map(
-      ({ videoId, title, artist, accent, volume }) => ({
+      ({ videoId, title, artist, accent, volume, enabled }) => ({
         videoId,
         title,
         artist,
         accent,
         volume,
+        enabled,
       }),
     );
     const shareUrl = new URL(window.location.href);
@@ -673,7 +772,7 @@ function App() {
           <div className="track-list">
             {tracks.map((track, index) => (
               <article
-                className={`track-card ${playingIds.has(track.id) ? "is-playing" : ""}`}
+                className={`track-card ${playingIds.has(track.id) ? "is-playing" : ""} ${!track.enabled ? "is-disabled" : ""}`}
                 key={track.id}
                 style={{ "--track-accent": track.accent } as CSSProperties}
               >
@@ -707,38 +806,25 @@ function App() {
                     )}
                   </div>
                   <p>{track.artist}</p>
-                  <div
-                    className="track-time"
-                    aria-label={`${track.title} playback time`}
-                  >
-                    <div
-                      className="track-progress"
-                      role="progressbar"
-                      aria-valuemin={0}
-                      aria-valuemax={playbackTimes[track.id]?.duration || 0}
-                      aria-valuenow={playbackTimes[track.id]?.current || 0}
-                    >
-                      <span
-                        style={{
-                          width: `${Math.min(
-                            100,
-                            ((playbackTimes[track.id]?.current || 0) /
-                              (playbackTimes[track.id]?.duration || 1)) *
-                              100,
-                          )}%`,
-                        }}
-                      />
-                    </div>
-                    <span>
-                      {formatTime(playbackTimes[track.id]?.current || 0)} /{" "}
-                      {formatTime(playbackTimes[track.id]?.duration || 0)}
-                    </span>
-                  </div>
+                  <PlaybackTimeIndicator
+                    title={track.title}
+                    currentTime={playbackTimes[track.id]?.current || 0}
+                    duration={playbackTimes[track.id]?.duration || 0}
+                  />
                 </div>
                 <div className="track-controls">
                   <button
+                    className={`enable-button ${track.enabled ? "enabled" : "disabled"}`}
+                    onClick={() => toggleTrackEnabled(track.id)}
+                    aria-label={`${track.enabled ? "Disable" : "Enable"} ${track.title}`}
+                    title={track.enabled ? "Disable song" : "Enable song"}
+                  >
+                    <Icon name={track.enabled ? "enabled" : "disabled"} size={18} />
+                  </button>
+                  <button
                     className={`play-button ${playingIds.has(track.id) ? "playing" : ""}`}
                     onClick={() => toggleTrack(track.id)}
+                    disabled={!track.enabled}
                     aria-label={`${playingIds.has(track.id) ? "Pause" : "Play"} ${track.title}`}
                     title={playingIds.has(track.id) ? "Pause" : "Play"}
                   >
@@ -750,6 +836,7 @@ function App() {
                   <button
                     className="replay-button"
                     onClick={() => replayTrack(track.id)}
+                    disabled={!track.enabled}
                     aria-label={`Replay ${track.title}`}
                     title="Replay"
                   >
@@ -798,7 +885,7 @@ function App() {
                 </div>
                 <YouTubeEngine
                   track={track}
-                  isPlaying={playingIds.has(track.id)}
+                  isPlaying={track.enabled && playingIds.has(track.id)}
                   volume={Math.round((masterVolume * track.volume) / 100)}
                   muted={mutedIds.has(track.id)}
                   replayToken={replayTokens[track.id] ?? 0}
@@ -844,15 +931,28 @@ function App() {
           </div>
 
           <div className="mixer-footer">
-            <button
-              className={`play-all ${allPlaying ? "active" : ""}`}
-              onClick={playAll}
-            >
-              <span className="play-all-icon">
-                <Icon name={allPlaying ? "pause" : "play"} size={14} />
-              </span>
-              {allPlaying ? "Pause all sounds" : "Play all sounds"}
-            </button>
+            <div className="master-actions">
+              <button
+                className={`play-all ${allPlaying ? "active" : ""}`}
+                onClick={playAll}
+                disabled={masterTracks.length === 0}
+              >
+                <span className="play-all-icon">
+                  <Icon name={allPlaying ? "pause" : "play"} size={14} />
+                </span>
+                {allPlaying ? "Pause all sounds" : "Play all sounds"}
+              </button>
+              <button
+                className="play-all replay-all"
+                onClick={replayAll}
+                disabled={masterTracks.length === 0}
+              >
+                <span className="play-all-icon">
+                  <Icon name="replay" size={14} />
+                </span>
+                Replay all
+              </button>
+            </div>
             <div className="master-control">
               <span className="master-label">MASTER</span>
               <button
