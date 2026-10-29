@@ -19,6 +19,7 @@ type Track = {
   accent: string;
   volume: number;
   enabled: boolean;
+  loop: boolean;
   state: TrackState;
 };
 
@@ -87,6 +88,7 @@ function parsePlaylist(value: string | null): Track[] | null {
             ? Math.max(0, Math.min(100, track.volume))
             : 100,
         enabled: track.enabled !== false,
+        loop: track.loop === true,
         state: "loading" as TrackState,
       }));
   } catch {
@@ -333,6 +335,12 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
         <path d="m8.2 10.8 7.6-4.4M8.2 13.2l7.6 4.4" />
       </svg>
     );
+  if (name === "loop")
+    return (
+      <svg {...common}>
+        <path d="m17 2 4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4m14-1v2a3 3 0 0 1-3 3H3" />
+      </svg>
+    );
   if (name === "replay")
     return (
       <svg {...common}>
@@ -493,13 +501,14 @@ function App() {
   useEffect(() => {
     try {
       const playlist = tracks.map(
-        ({ videoId, title, artist, accent, volume, enabled }) => ({
+        ({ videoId, title, artist, accent, volume, enabled, loop }) => ({
           videoId,
           title,
           artist,
           accent,
           volume,
           enabled,
+          loop,
         }),
       );
       localStorage.setItem(PLAYLIST_STORAGE_KEY, JSON.stringify(playlist));
@@ -636,6 +645,7 @@ function App() {
       accent: ACCENTS[tracks.length % ACCENTS.length],
       volume: 100,
       enabled: true,
+      loop: false,
       state: "loading",
     };
     setTracks((current) => [...current, newTrack]);
@@ -664,13 +674,14 @@ function App() {
 
   const sharePlaylist = async () => {
     const playlist = tracks.map(
-      ({ videoId, title, artist, accent, volume, enabled }) => ({
+      ({ videoId, title, artist, accent, volume, enabled, loop }) => ({
         videoId,
         title,
         artist,
         accent,
         volume,
         enabled,
+        loop,
       }),
     );
     const shareUrl = new URL(window.location.href);
@@ -842,6 +853,16 @@ function App() {
                   >
                     <Icon name="replay" size={18} />
                   </button>
+                  <button
+                    className="replay-button"
+                    style={track.loop ? { color: "var(--green)" } : undefined}
+                    onClick={() => updateTrack(track.id, { loop: !track.loop })}
+                    aria-label={`${track.loop ? "Disable" : "Enable"} loop for ${track.title}`}
+                    aria-pressed={track.loop}
+                    title={track.loop ? "Loop on" : "Loop off"}
+                  >
+                    <Icon name="loop" size={18} />
+                  </button>
                   <label
                     className="track-volume"
                     aria-label={`${track.title} volume`}
@@ -899,6 +920,10 @@ function App() {
                     if (state === window.YT?.PlayerState.PAUSED)
                       updateTrack(track.id, { state: "paused" });
                     if (state === window.YT?.PlayerState.ENDED) {
+                      if (track.loop && track.enabled && playingIds.has(track.id)) {
+                        replayTrack(track.id);
+                        return;
+                      }
                       updateTrack(track.id, { state: "paused" });
                       setPlayingIds((current) => {
                         const next = new Set(current);
