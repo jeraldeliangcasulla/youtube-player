@@ -11,6 +11,8 @@ declare global {
       constructor(element: HTMLElement, options: PlayerOptions)
       destroy(): void
       playVideo(): void
+      playVideoAt(index: number): void
+      setLoop(loopPlaylists: boolean): void
       pauseVideo(): void
       stopVideo(): void
       setVolume(volume: number): void
