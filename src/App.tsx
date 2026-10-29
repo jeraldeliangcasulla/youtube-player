@@ -398,6 +398,9 @@ function YouTubeEngine({
 }) {
   const mountRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<YT.Player | null>(null);
+  const readyRef = useRef(false);
+  const playbackRef = useRef({ isPlaying, volume, muted, replayToken, loop: track.loop });
+  playbackRef.current = { isPlaying, volume, muted, replayToken, loop: track.loop };
   const handlersRef = useRef({ onReady, onTimeUpdate, onStateChange, onError });
   handlersRef.current = { onReady, onTimeUpdate, onStateChange, onError };
   const syncPlaybackTime = usePlaybackTime(playerRef, isPlaying, onTimeUpdate);
@@ -412,6 +415,8 @@ function YouTubeEngine({
         height: 1,
         playerVars: {
           autoplay: 0,
+          playlist: track.videoId,
+          loop: playbackRef.current.loop ? 1 : 0,
           controls: 0,
           disablekb: 1,
           fs: 0,
@@ -421,16 +426,26 @@ function YouTubeEngine({
         },
         events: {
           onReady: (event) => {
-            event.target.setVolume(muted ? 0 : volume);
-            if (replayToken > 0) {
+            readyRef.current = true;
+            const playback = playbackRef.current;
+            event.target.setVolume(playback.muted ? 0 : playback.volume);
+            event.target.setLoop(playback.loop);
+            if (playback.replayToken > 0) {
               event.target.seekTo(0, true);
-              event.target.playVideo();
             }
+            if (playback.isPlaying) event.target.playVideo();
+            else event.target.pauseVideo();
             syncPlaybackTime();
             handlersRef.current.onReady(event.target);
           },
-          onStateChange: (event) =>
-            handlersRef.current.onStateChange(event.data),
+          onStateChange: (event) => {
+            const playback = playbackRef.current;
+            if (event.data === window.YT.PlayerState.ENDED && playback.loop && playback.isPlaying) {
+              event.target.playVideoAt(0);
+              return;
+            }
+            handlersRef.current.onStateChange(event.data);
+          },
           onError: () => handlersRef.current.onError(),
         },
       });
@@ -438,24 +453,30 @@ function YouTubeEngine({
 
     return () => {
       cancelled = true;
+      readyRef.current = false;
       playerRef.current?.destroy();
       playerRef.current = null;
     };
   }, [track.videoId]);
 
   useEffect(() => {
-    if (!playerRef.current) return;
+    if (!readyRef.current || !playerRef.current) return;
     playerRef.current.setVolume(muted ? 0 : volume);
   }, [muted, volume]);
 
   useEffect(() => {
-    if (!playerRef.current) return;
+    if (!readyRef.current || !playerRef.current) return;
     if (isPlaying) playerRef.current.playVideo();
     else playerRef.current.pauseVideo();
   }, [isPlaying]);
 
   useEffect(() => {
-    if (!playerRef.current || replayToken === 0) return;
+    if (!readyRef.current || !playerRef.current) return;
+    playerRef.current.setLoop(track.loop);
+  }, [track.loop]);
+
+  useEffect(() => {
+    if (!readyRef.current || !playerRef.current || replayToken === 0) return;
     playerRef.current.seekTo(0, true);
     playerRef.current.playVideo();
   }, [replayToken]);
@@ -920,10 +941,6 @@ function App() {
                     if (state === window.YT?.PlayerState.PAUSED)
                       updateTrack(track.id, { state: "paused" });
                     if (state === window.YT?.PlayerState.ENDED) {
-                      if (track.loop && track.enabled && playingIds.has(track.id)) {
-                        replayTrack(track.id);
-                        return;
-                      }
                       updateTrack(track.id, { state: "paused" });
                       setPlayingIds((current) => {
                         const next = new Set(current);
